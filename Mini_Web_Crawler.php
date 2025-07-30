@@ -1,71 +1,110 @@
 <?php
+require_once('simple_html_dom.php'); // Βιβλιοθήκη όπως ζητήθηκε
+
 $logFile = 'log.txt';
 $urlFile = 'urls.json';
+$configFile = 'scrape_config.json';
 
 try {
-    // Έλεγχος αρχείου με URLs (fetch)
-    if (!file_exists($urlFile)) {
-        throw new Exception("URLs file not found.");
-    }
+    // Φόρτωση URLs και config από αρχεία JSON
+    $urls = loadJsonFile($urlFile);
+    $config = loadJsonFile($configFile);
 
-    // Ανάγνωση και μετατροπή σε πίνακα (parse)
-    $jsonData = file_get_contents($urlFile);
-    $urls = json_decode($jsonData, true); //Μετατροπη Json σε array
-
-    if (!is_array($urls)) {
-        throw new Exception("Invalid JSON format in $urlFile");
-    }
-
-    // Συνάρτηση check URL accessibility
-    function isUrlAccessible($url, &$error) {
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_NOBODY, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_exec($ch);
-
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        curl_close($ch);
-
-        if (!empty($curlError)) {
-            $error = $curlError;
-            return false;
-        }
-
-        if ($httpCode < 200 || $httpCode >= 400) {
-            $error = "HTTP $httpCode";
-            return false;
-        }
-
-        return true;
-    }
-
-    // Loop ελέγχου URL (retry if failed) (save)
     foreach ($urls as $url) {
         $timestamp = date("Y-m-d H:i:s");
-        $error = '';
+        $domain = getDomainFromUrl($url); // Εξαγωγή domain (π.χ. askadamstore.com)
+        $selectors = $config[$domain] ?? null;
 
-        if (isUrlAccessible($url, $error)) {
-            echo "Accessible: $url\n";
-        } else {
-            echo "Retrying: $url\n";
-            sleep(1);
-            if (isUrlAccessible($url, $error)) {
-                echo "Accessible on retry: $url\n";
-            } else {
-                $message = "[$timestamp] ERROR Unreachable: $url - $error";
-                echo "$message\n";
-                file_put_contents($logFile, $message . PHP_EOL, FILE_APPEND); //error logging if site unreachable
-            }
+        if (!$selectors) {
+            logMessage("[$timestamp] No config for: $domain"); // Αν δεν υπάρχει config για αυτό το domain, skip
+            continue;
         }
+
+        if (!checkUrlAvailability($url)) {
+            logMessage("[$timestamp] ERROR Unreachable: $url"); // Αν δεν είναι προσβάσιμο, log error
+            continue;
+        }
+
+        echo "Accessible: $url\n";
+
+        // Κύρια συνάρτηση scraping
+        [$title, $price, $availability] = scrapeDataFromPage($url, $selectors);
+
+        // Εμφάνιση και logging αποτελεσμάτων
+        printScrapeResult($url, $title, $price, $availability, $timestamp);
     }
 
 } catch (Exception $e) {
-    // Κεντρικός χειρισμός σφαλμάτων (error loging if catastropic failure)
-    $timestamp = date("Y-m-d H:i:s");
-    $errorMsg = "[$timestamp] ERROR: " . $e->getMessage();
-    echo $errorMsg . "\n";
-    file_put_contents($logFile, $errorMsg . PHP_EOL, FILE_APPEND);
+    // Κεντρικός χειρισμός σφαλμάτων
+    logMessage("[" . date("Y-m-d H:i:s") . "] ERROR: " . $e->getMessage());
 }
-?>
+
+//Συναρτήσεις
+
+function loadJsonFile($path) {
+    // Επιστρέφει array από JSON αρχείο, ή πετάει exception αν λείπει ή είναι άκυρο
+    if (!file_exists($path)) throw new Exception("Missing file: $path");
+    $data = json_decode(file_get_contents($path), true);
+    if (!is_array($data)) throw new Exception("Invalid JSON in $path");
+    return $data;
+}
+
+function getDomainFromUrl($url) {
+    // Επιστρέφει μόνο το καθαρό domain χωρίς www 
+    $host = parse_url($url, PHP_URL_HOST);
+    return preg_replace('/^www\./', '', strtolower($host));
+}
+
+function checkUrlAvailability($url) {
+    // Χρησιμοποιεί cURL για να ελέγξει αν το URL είναι προσβάσιμο (status code check)
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_NOBODY => true,
+        CURLOPT_TIMEOUT => 10,
+        CURLOPT_FOLLOWLOCATION => true
+    ]);
+    curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+    return empty($curlError) && $httpCode >= 200 && $httpCode < 400;
+}
+
+function scrapeDataFromPage($url, $selectors) {
+    // Εκτελεί scraping με βάση τους selectors από το config
+    $html = file_get_html($url);
+    if (!$html) return [null, null, null];
+
+    $title = $html->find($selectors['title'], 0)?->plaintext ?? '';
+    $price = extractPrice($html, $selectors['price']);
+    $availability = $html->find($selectors['availability'], 0)?->plaintext ?? '';
+
+    return [trim($title), trim($price), trim($availability)];
+}
+
+function extractPrice($html, $priceSelector) {
+    // Υλοποιεί την ανάγνωση τιμής μέσω selector (απλή λογική προς το παρόν επειδη σε αλλα site το βαζει σε ξεχωριστο tag και θελει μαλλον regex επέλεξα να μην τα βάλω στο παράδειγμα)
+    $priceNode = $html->find($priceSelector, 0);
+    if (!$priceNode) return '';
+    return $priceNode->plaintext;
+}
+
+function printScrapeResult($url, $title, $price, $availability, $timestamp) {
+    // Εκτυπώνει το αποτέλεσμα scraping και καταγράφει αν λείπει κάποιο πεδίο
+    echo "Title: " . ($title ?: 'N/A') . "\n";
+    echo "Price: " . ($price ?: 'N/A') . "\n";
+    echo "Availability: " . ($availability ?: 'Unknown') . "\n";
+
+    if (!$title || !$price || !$availability) {
+        $missing = (!$title ? 'title ' : '') . (!$price ? 'price ' : '') . (!$availability ? 'availability ' : '');
+        logMessage("[$timestamp] Missing: $missing-> $url");
+    }
+
+    echo str_repeat('-', 50) . "\n";
+}
+
+function logMessage($msg) {
+    // Καταγράφει μηνύματα σε log αρχείο και εμφανίζει στην κονσόλα
+    echo $msg . "\n";
+    file_put_contents('log.txt', $msg . PHP_EOL, FILE_APPEND);
+}

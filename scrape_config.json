@@ -1,0 +1,12 @@
+{
+    "perkas.gr": {
+    "title": "div.title.page-title",
+    "price": "div.product-price",
+    "availability": "li.product-stock.in-stock span"
+  },
+  "askadamstore.gr": {
+    "title": "div.title.page-title",
+  "price": "div.product-price",
+  "availability": "li.product-stock.in-stock span"
+  }
+}
