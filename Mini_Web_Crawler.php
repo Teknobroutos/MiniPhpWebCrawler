@@ -5,10 +5,28 @@ $logFile = 'log.txt';
 $urlFile = 'urls.json';
 $configFile = 'scrape_config.json';
 
+function initializeDatabase($dbPath = 'scrape_results.db') {
+    //init Database
+    $db = new SQLite3($dbPath);
+    $db->exec("CREATE TABLE IF NOT EXISTS scraped_products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        store TEXT,
+        product_name TEXT,
+        price TEXT,
+        availability TEXT,
+        scraped_at TEXT
+    )");
+    return $db;
+}
+
+
 try {
     // Φόρτωση URLs και config από αρχεία JSON
     $urls = loadJsonFile($urlFile);
     $config = loadJsonFile($configFile);
+
+    $db = initializeDatabase(); // Δημιουργεί τη βάση αν δεν υπάρχει
+
 
     foreach ($urls as $url) {
         $timestamp = date("Y-m-d H:i:s");
@@ -32,6 +50,7 @@ try {
 
         // Εμφάνιση και logging αποτελεσμάτων
         printScrapeResult($url, $title, $price, $availability, $timestamp);
+        saveToDatabase($db, $domain, $title, $price, $availability, $timestamp); //Save to DB
     }
 
 } catch (Exception $e) {
@@ -108,3 +127,15 @@ function logMessage($msg) {
     echo $msg . "\n";
     file_put_contents('log.txt', $msg . PHP_EOL, FILE_APPEND);
 }
+
+function saveToDatabase($db, $store, $product_name, $price, $availability, $scraped_at) {
+    $stmt = $db->prepare("INSERT INTO scraped_products (store, product_name, price, availability, scraped_at)
+                          VALUES (:store, :product_name, :price, :availability, :scraped_at)");
+    $stmt->bindValue(':store', $store, SQLITE3_TEXT);
+    $stmt->bindValue(':product_name', $product_name, SQLITE3_TEXT);
+    $stmt->bindValue(':price', $price, SQLITE3_TEXT);
+    $stmt->bindValue(':availability', $availability, SQLITE3_TEXT);
+    $stmt->bindValue(':scraped_at', $scraped_at, SQLITE3_TEXT);
+    $stmt->execute();
+}
+
